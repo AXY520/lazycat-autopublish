@@ -22,6 +22,20 @@ APP="${1:-}"
 APP_DIR="$ROOT/apps/$APP"
 
 log() { printf '\033[1;34m[sync]\033[0m %s\n' "$*" >&2; }
+# 对上游临时故障退避重试（指数间隔）。用法: retry_cmd <次数> <首次间隔秒> <命令...>
+retry_cmd() {
+  local attempts="$1" delay="$2"
+  shift 2
+  local i=1
+  while :; do
+    if "$@"; then return 0; fi
+    if [ "$i" -ge "$attempts" ]; then return 1; fi
+    log "失败（第 $i 次），${delay}s 后重试：$1"
+    sleep "$delay"
+    i=$((i + 1))
+    delay=$((delay * 2))
+  done
+}
 result() { log "RESULT: $*"; }
 die() { log "失败: $*"; result "失败：$*"; exit 1; }
 
@@ -130,12 +144,19 @@ if [ -n "${IMAGE_REPO:-}" ] && [ "$IMAGE_MODE" = "registry" ]; then
     log "DRY_RUN：跳过 copy-image，沿用 manifest 里已有的镜像引用"
   else
     log "登录商店账号（copy-image 需要）"
-    lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" \
+    retry_cmd 3 15 lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" \
       || die "商店登录失败"
     log "复制镜像到懒猫官方仓库：$IMAGE_REPO:$VERSION"
-    IMAGE_REF="$(lzc-cli appstore copy-image "$IMAGE_REPO:$VERSION" 2>&1 \
-      | grep -oE 'registry\.lazycat\.cloud/[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+' | tail -1)"
-    [ -n "$IMAGE_REF" ] || die "copy-image 未返回官方仓库地址（镜像是否公网可拉取？）"
+    IMAGE_REF=""
+    for i in 1 2 3 4; do
+      IMAGE_REF="$(lzc-cli appstore copy-image "$IMAGE_REPO:$VERSION" 2>&1 \
+        | grep -oE 'registry\.lazycat\.cloud/[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+' | tail -1 || true)"
+      [ -n "$IMAGE_REF" ] && break
+      [ "$i" -lt 4 ] || break
+      log "copy-image 未返回地址（第 $i 次），$((i * 20))s 后重试"
+      sleep $((i * 20))
+    done
+    [ -n "$IMAGE_REF" ] || die "copy-image 未返回官方仓库地址（镜像是否公网可拉取 / 商店网关是否可用？）"
     log "官方镜像引用：$IMAGE_REF"
     python3 - "$APP_DIR/packaging/lzc-manifest.yml" "$IMAGE_REF" <<'PY'
 import re, sys
@@ -205,7 +226,8 @@ fi
 # ── 8. 发布 ──
 log "发布 $PKG_ID $VERSION 到商店"
 if [ "$IMAGE_MODE" != "registry" ]; then
-  lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" || die "商店登录失败"
+  retry_cmd 3 15 lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" \
+    || die "商店登录失败"
 fi
 CH_ZH="$(plan_get changelog_zh)"
 CH_EN="$(plan_get changelog_en)"
@@ -214,18 +236,51 @@ publish_once() { # 透传给 lzc-cli
   lzc-cli appstore publish "$LPK" "$@" 2> "$PUBLISH_ERR"
 }
 is_duplicate() { grep -qiE "存在|重复|exists|duplicate" "$PUBLISH_ERR"; }
+# 商店前置网关（Tengine）偶发 502/503/超时，返回 HTML 而非 JSON。
+# 这类是上游临时故障，必须重试——曾因此整版漏发（2026-11-02 的 0.6.6）。
+is_transient() {
+  grep -qiE '<!DOCTYPE|<html|50[234] |ECONNRESET|ETIMEDOUT|socket hang up|fetch failed|network error|timeout' "$PUBLISH_ERR"
+}
+is_lang_rejected() { grep -qiE 'language.*(invalid|not.*support)|语种' "$PUBLISH_ERR"; }
 
-if ! publish_once --clangs "zh:$CH_ZH" --clangs "en:$CH_EN"; then
+publish_ok=""
+attempt=1
+max_attempts=5
+delay=30
+while [ "$attempt" -le "$max_attempts" ]; do
+  if publish_once --clangs "zh:$CH_ZH" --clangs "en:$CH_EN"; then
+    publish_ok=1
+    break
+  fi
   if is_duplicate; then
     log "商店提示该版本已存在，视为已发布"
-  elif ! publish_once --clang zh -c "$(cat "$CH_ZH")"; then
+    publish_ok=1
+    break
+  fi
+  if is_lang_rejected; then
+    log "商店不接受双语更新日志，改用单语言提交"
+    if publish_once --clang zh -c "$(cat "$CH_ZH")"; then
+      publish_ok=1
+      break
+    fi
     if is_duplicate; then
       log "商店提示该版本已存在，视为已发布"
-    else
-      cat "$PUBLISH_ERR" >&2
-      die "商店发布失败"
+      publish_ok=1
+      break
     fi
   fi
+  if is_transient && [ "$attempt" -lt "$max_attempts" ]; then
+    log "商店返回临时故障（第 $attempt 次），${delay}s 后重试"
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+    continue
+  fi
+  break
+done
+if [ -z "$publish_ok" ]; then
+  cat "$PUBLISH_ERR" >&2
+  die "商店发布失败（状态未落盘，下轮调度会自动重试）"
 fi
 log "发布提交成功：$PKG_ID $VERSION（等待商店审核）"
 
