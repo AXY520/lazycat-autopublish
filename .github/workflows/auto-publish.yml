@@ -40,7 +40,12 @@ jobs:
           node-version: "22"
 
       - name: Install lzc-cli
-        run: npm install -g @lazycatcloud/lzc-cli
+        run: npm install -g @lazycatcloud/lzc-cli@2.0.10
+
+      # 2.0.10 的 docker-save 解包器在 runner 上会随机截断 embed 层
+      # （lpk 校验 diff_id 不符）；换成 tar.x 解包后逐文件串行回调。
+      - name: Patch lzc-cli packer
+        run: python3 scripts/patch_lzc_cli.py "$(npm root -g)/@lazycatcloud/lzc-cli/lib/app/lpk_build_images_pack_local.js"
 
       - name: Runner docker diagnostics
         run: |
