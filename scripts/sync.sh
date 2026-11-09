@@ -52,6 +52,17 @@ DRY_RUN="${DRY_RUN:-0}"
 # IMAGE_MODE=registry（默认推荐）把镜像复制到懒猫官方仓库、lpk 只引用；
 # IMAGE_MODE=embed 把镜像层内嵌进 lpk（体积大，且依赖构建机 docker 导出可靠）。
 IMAGE_MODE="${IMAGE_MODE:-registry}"
+# copy-image 前的登录可复用到发布阶段，避免重复登录（无镜像应用只登录一次）
+LOGGED_IN=0
+
+# DRY_RUN：不论成功还是中途失败，退出时都还原脚本改动的文件。
+restore_dry_run() {
+  [ "$DRY_RUN" = "1" ] || return 0
+  # 钩子可能改 Dockerfile 等任何打包文件，整个 packaging 一起还原
+  git -C "$ROOT" checkout -q -- "$STATE" "$APP_DIR/packaging" 2>/dev/null || true
+  rm -f "$APP_DIR/.version"
+}
+trap restore_dry_run EXIT
 
 # 导出给 plan.py 的 release 解析配置
 export MARKER_BEGIN="${MARKER_BEGIN:-}"
@@ -146,6 +157,7 @@ if [ -n "${IMAGE_REPO:-}" ] && [ "$IMAGE_MODE" = "registry" ]; then
     log "登录商店账号（copy-image 需要）"
     retry_cmd 3 15 lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" \
       || die "商店登录失败"
+    LOGGED_IN=1
     log "复制镜像到懒猫官方仓库：$IMAGE_REPO:$VERSION"
     IMAGE_REF=""
     for i in 1 2 3 4; do
@@ -184,6 +196,16 @@ if [ -n "${IMAGE_REPO:-}" ] && [ "$IMAGE_MODE" = "embed" ]; then
 fi
 grep -q "^version: $VERSION" "$APP_DIR/packaging/package.yml" || die "package.yml 版本写入失败"
 
+# ── 4b. 应用自有发布前钩子（如 ipadown 跟随上游二进制 → 自身 patch 版本+1）──
+if [ -f "$APP_DIR/pre-build.sh" ]; then
+  log "执行 $APP/pre-build.sh（上游 $TAG）"
+  UPSTREAM_TAG="$TAG" UPSTREAM_VERSION="$VERSION" APP_DIR="$APP_DIR" RELEASE_JSON="$RELEASE_JSON" \
+    bash "$APP_DIR/pre-build.sh" || die "pre-build 钩子失败"
+  VERSION="$(cat "$APP_DIR/.version" 2>/dev/null || true)"
+  [ -n "$VERSION" ] || die "pre-build 未写出 $APP_DIR/.version"
+  log "应用版本 $VERSION（上游 $TAG）"
+fi
+
 # ── 5. 构建 + lint + 内嵌镜像完整性校验 ──
 build_lpk() {
   cd "$APP_DIR/packaging"
@@ -208,24 +230,22 @@ if ! python3 "$ROOT/scripts/verify_lpk.py" "$LPK"; then
   }
 fi
 
-# ── 6. 冒烟（apps/<应用名>/smoke.sh，可选） ──
-if [ -n "${IMAGE_REPO:-}" ] && [ -f "$APP_DIR/smoke.sh" ]; then
-  log "冒烟检查 $IMAGE_REPO:$VERSION"
-  bash "$APP_DIR/smoke.sh" "$IMAGE_REPO:$VERSION" "$VERSION" || die "冒烟未通过"
+# ── 6. 冒烟（apps/<应用名>/smoke.sh，可选；无上游镜像的应用传空镜像名） ──
+if [ -f "$APP_DIR/smoke.sh" ]; then
+  log "冒烟检查 $APP v$VERSION"
+  bash "$APP_DIR/smoke.sh" "${IMAGE_REPO:-}" "$VERSION" || die "冒烟未通过"
   log "冒烟通过"
 fi
 
 # ── 7. DRY_RUN 到此为止 ──
 if [ "$DRY_RUN" = "1" ]; then
-  log "DRY_RUN：不发布，还原脚本改动的文件"
-  git -C "$ROOT" checkout -q -- "$STATE" "$APP_DIR/packaging/package.yml" \
-    "$APP_DIR/packaging/lzc-manifest.yml" "$APP_DIR/packaging/lzc-build.yml" || true
+  log "DRY_RUN：不发布"
   exit 0
 fi
 
 # ── 8. 发布 ──
 log "发布 $PKG_ID $VERSION 到商店"
-if [ "$IMAGE_MODE" != "registry" ]; then
+if [ "$LOGGED_IN" != 1 ]; then
   retry_cmd 3 15 lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" \
     || die "商店登录失败"
 fi

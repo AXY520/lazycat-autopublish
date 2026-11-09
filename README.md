@@ -19,6 +19,7 @@
   ├─ docker pull         IMAGE_REPO:<版本>（存在性校验 + 冒烟对象）
   ├─ copy-image          镜像复制进 registry.lazycat.cloud，manifest 改写为官方引用
   ├─ sed 落版本号        apps/<应用>/packaging/package.yml
+  ├─ pre-build.sh        应用自有钩子（可选：改自身版本号/Dockerfile，写回 .version）
   ├─ lzc-cli build       小包（不含镜像层）
   ├─ lpk lint            商店上架要求检查
   ├─ verify_lpk.py       内嵌镜像完整性校验（embed 模式拦截断层）
@@ -100,6 +101,7 @@ FORCE=1 DRY_RUN=1 scripts/sync.sh <应用名>
 ## 注意事项
 
 - **商店审核是人工的**：本流水线自动「提交审核」，不是自动上架。
+- **带镜像的应用必须在 `lzc-build.yml` 写 `builder: local`**：CI runner 没有配对盒子，lzc-cli 默认的 `remote` builder 会立刻失败（`无法连接客户端自动判读盒子名称`）；registry 模式、没有 `images:` 的应用不受影响。
 - **DRY_RUN 会还原脚本改动的文件**（`package.yml` / `lzc-manifest.yml` / `lzc-build.yml` /
   `state.json`），本地演练前记得先提交自己的配置改动。
 - **门控组件发布**：release 标记缺 `GATE_COMPONENT`（如 `server`）或 `docker≠ok` → 只记状态

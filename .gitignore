@@ -2,3 +2,4 @@
 .lzc-cli-*
 node_modules/
 logs-*.txt
+apps/*/.version

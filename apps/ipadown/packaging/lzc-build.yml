@@ -1,5 +1,7 @@
 images:
   app:
+    # CI runner 没有配对盒子；lzc-cli 默认 remote builder 会直接失败
+    builder: local
     dockerfile: Dockerfile
     context: .
 icon: crates/web/static/icon.png
