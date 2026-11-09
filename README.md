@@ -101,6 +101,7 @@ FORCE=1 DRY_RUN=1 scripts/sync.sh <应用名>
 ## 注意事项
 
 - **商店审核是人工的**：本流水线自动「提交审核」，不是自动上架。
+- **lzc-cli 固定 2.0.10 并打补丁**：2.0.10 的 docker-save 解包器在 runner 上会随机截断 embed 层（同一 commit 每次坏的层不同，`verify_lpk.py` 报 diff_id 不符）。workflow 安装后跑 `scripts/patch_lzc_cli.py`，把解包换成 `tar.x` + 逐文件串行回调；升级 lzc-cli 前先确认上游已修复，否则同步调整补丁。
 - **带镜像的应用必须在 `lzc-build.yml` 写 `builder: local`**：CI runner 没有配对盒子，lzc-cli 默认的 `remote` builder 会立刻失败（`无法连接客户端自动判读盒子名称`）；registry 模式、没有 `images:` 的应用不受影响。
 - **DRY_RUN 会还原脚本改动的文件**（`package.yml` / `lzc-manifest.yml` / `lzc-build.yml` /
   `state.json`），本地演练前记得先提交自己的配置改动。
