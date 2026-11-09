@@ -1,9 +1,6 @@
 name: lazycat-store-publish
 
 on:
-  push:
-    # 临时：立即触发本轮发布，运行结束后回退
-    branches: [main]
   schedule:
     # 每 6 小时检查一次各应用上游 release（分钟值错开整点）
     - cron: "23 */6 * * *"
