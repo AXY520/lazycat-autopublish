@@ -16,6 +16,10 @@ ARG TARGETARCH
 ARG IPATOOL_VERSION=2.8.0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# Apple Root CA：gsa.apple.com（ipatool 2.8 登录/设备证明）证书链的根；Debian/Mozilla
+# 信任库不含 Apple 根，而 ipatool 自带的下载兜底地址固定返回 403。
+COPY certs/apple-root-ca.pem /usr/local/share/ca-certificates/apple-root-ca.crt
+RUN update-ca-certificates
 # ipatool：SAP 签名登录/下载依赖（2026-08 起苹果强制 X-Apple-ActionSignature）
 # 2.7.0 修复 redownload 请求被苹果 403 拒绝（空响应体）的问题
 RUN arch="${TARGETARCH:-amd64}" \
