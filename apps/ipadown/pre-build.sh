@@ -70,13 +70,14 @@ done
 grep -q "^ARG IPATOOL_VERSION=$UPVER" "$PKG_DIR/Dockerfile" || { echo "pre-build: IPATOOL_VERSION 写入失败" >&2; exit 1; }
 
 # ── 3. 更新日志（ipatool 原文 → 中英导向文案） ──
-NOTES="$(cat /tmp/changelog.en.md 2>/dev/null || true)"
 cat > /tmp/changelog.zh.md <<EOF
-升级内置 ipatool 至 v$UPVER，跟进 App Store 下载协议的修复与改进（登录兼容、下载可靠性等）。
-上游更新说明：
-$NOTES
+新增「屏蔽 App Store 更新提示」开关（账户页，默认开启）：开启时安装前移除 iTunesMetadata.plist，App Store 不再提示更新；关闭后安装会恢复该信息，可随时切换。
+
+下载的 IPA 不再被改写，只在安装时按开关处理。
 EOF
 cat > /tmp/changelog.en.md <<EOF
+Add a "Block App Store update prompts" switch under Account (on by default). When enabled, iTunesMetadata.plist is removed before install so App Store no longer offers updates; turning it off restores the metadata on the next install.
+EOF
 Update the bundled ipatool to v$UPVER, following upstream App Store download protocol fixes and improvements (login compatibility, download reliability, etc.).
 Upstream release notes:
 $NOTES
