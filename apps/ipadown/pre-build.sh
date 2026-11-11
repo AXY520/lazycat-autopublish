@@ -70,16 +70,19 @@ done
 grep -q "^ARG IPATOOL_VERSION=$UPVER" "$PKG_DIR/Dockerfile" || { echo "pre-build: IPATOOL_VERSION 写入失败" >&2; exit 1; }
 
 # ── 3. 更新日志（ipatool 原文 → 中英导向文案） ──
-NOTES="$(cat /tmp/changelog.en.md 2>/dev/null || true)"
 cat > /tmp/changelog.zh.md <<EOF
-升级内置 ipatool 至 v$UPVER，跟进 App Store 下载协议的修复与改进（登录兼容、下载可靠性等）。
-上游更新说明：
-$NOTES
+修复：旧登录会话缺少下载所需的设备证明，下载会失败。现在遇到时自动弹出重新登录框，登录成功后自动重试。
+
+其他改进：
+- 安装后不再提示 App Store 更新（移除 iTunesMetadata.plist，App 本体签名不变）
+- 删除下载任务时一并清理断点文件；搜索缓存加上限
 EOF
 cat > /tmp/changelog.en.md <<EOF
-Update the bundled ipatool to v$UPVER, following upstream App Store download protocol fixes and improvements (login compatibility, download reliability, etc.).
-Upstream release notes:
-$NOTES
+Fix: sessions created by older versions lack the device proof required for downloads. The app now prompts to sign in again and automatically retries after login.
+
+Other improvements:
+- No more App Store update prompts after install (removes iTunesMetadata.plist; app signature unchanged)
+- Deleting a download job also cleans up its partial file; search cache is now bounded
 EOF
 
 # ── 4. 最终版本号交还 sync.sh ──
