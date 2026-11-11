@@ -92,13 +92,30 @@ impl ArtworkCache {
     }
 }
 
-/// 搜索结果进程级缓存：key → (写入时刻, 结果)。
-/// 苹果搜索端点按出口 IP 限流（403），重复搜索/多用户共享盒子时避免反复消耗配额。
-type SearchCache = Mutex<HashMap<String, (std::time::Instant, Vec<store::Software>)>>;
+/// key → (写入时刻, 结果)。苹果搜索端点按出口 IP 限流（403），
+/// 重复搜索/多用户共享盒子时避免反复消耗配额。
+type SearchEntries = HashMap<String, (std::time::Instant, Vec<store::Software>)>;
+type SearchCache = Mutex<SearchEntries>;
 static SEARCH_CACHE: std::sync::OnceLock<SearchCache> = std::sync::OnceLock::new();
+const SEARCH_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_SEARCH_CACHE_ENTRIES: usize = 128;
 
 fn search_cache() -> &'static SearchCache {
     SEARCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 写入前清理过期项；满了先淘汰最旧的一条，保证条目上限。
+fn prune_search_cache(cache: &mut SearchEntries) {
+    cache.retain(|_, (cached_at, _)| cached_at.elapsed() < SEARCH_CACHE_TTL);
+    if cache.len() >= MAX_SEARCH_CACHE_ENTRIES {
+        let oldest = cache
+            .iter()
+            .min_by_key(|(_, (cached_at, _))| *cached_at)
+            .map(|(key, _)| key.clone());
+        if let Some(oldest) = oldest {
+            cache.remove(&oldest);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -537,6 +554,8 @@ pub(crate) fn friendly_msg(raw: &str) -> String {
         "需要双重验证码，请完成验证后继续下载".into()
     } else if l.contains("license is required") {
         "账号未拥有该 App（免费 App 需先在手机 App Store「获取」一次，付费 App 需先购买）；若确认已拥有，则可能是登录会话过期，请重新登录".into()
+    } else if l.contains("store amd state is not provisioned") {
+        "登录状态缺少新版下载所需的设备证明，请退出登录后重新登录 Apple ID".into()
     } else if l.contains("password token is expired") || l.contains("sign in required") {
         "登录会话已过期，请重新登录".into()
     } else if l.contains("http 403") || l.contains("non-plist body") {
@@ -562,6 +581,7 @@ fn is_auth_problem(raw: &str) -> bool {
     l.contains("password token is expired")
         || l.contains("sign in required")
         || l.contains("license is required")
+        || l.contains("store amd state is not provisioned")
 }
 
 fn store_err(e: store::StoreError) -> Response {
@@ -705,7 +725,7 @@ async fn api_login(State(state): State<AppState>, Json(req): Json<LoginReq>) -> 
             }) {
                 return store_err(error);
             }
-            let cleared_jobs = jobs::clear_two_factor_failures(&state.jobs, &login_email);
+            let cleared_jobs = jobs::clear_auth_failures(&state.jobs, &login_email);
             store::log_info!(
                 "auth",
                 "login ok email={} cleared_jobs={cleared_jobs}",
@@ -866,15 +886,16 @@ async fn api_search(Query(q): Query<SearchQuery>) -> Response {
     {
         let cache = lock_ignore_poison(search_cache());
         if let Some((cached_at, results)) = cache.get(&cache_key) {
-            if cached_at.elapsed() < std::time::Duration::from_secs(600) {
+            if cached_at.elapsed() < SEARCH_CACHE_TTL {
                 return Json(results.clone()).into_response();
             }
         }
     }
     match store::search::search_with_fallback(term, &country, limit, q.platform).await {
         Ok(results) => {
-            lock_ignore_poison(search_cache())
-                .insert(cache_key, (std::time::Instant::now(), results.clone()));
+            let mut cache = lock_ignore_poison(search_cache());
+            prune_search_cache(&mut cache);
+            cache.insert(cache_key, (std::time::Instant::now(), results.clone()));
             Json(results).into_response()
         }
         Err(e) => {
@@ -1042,12 +1063,16 @@ async fn api_download_resume(State(s): State<AppState>, Path(id): Path<String>) 
     }
 }
 
-/// 删除任务记录（进行中的任务先中止）
+/// 删除任务记录（进行中的任务先中止，断点文件一并清理）
 async fn api_download_delete(State(s): State<AppState>, Path(id): Path<String>) -> Response {
-    if jobs::remove_job(&s.jobs, &id) {
-        Json(serde_json::json!({ "ok": true })).into_response()
-    } else {
-        err_json(StatusCode::NOT_FOUND, "任务不存在")
+    match jobs::remove_job(&s.jobs, &id) {
+        None => err_json(StatusCode::NOT_FOUND, "任务不存在"),
+        Some(tmp) => {
+            if let (Some(filename), Ok(dir)) = (tmp, store::config::ipas_dir()) {
+                let _ = tokio::fs::remove_file(dir.join(format!("{filename}.tmp"))).await;
+            }
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
     }
 }
 
@@ -1342,8 +1367,22 @@ async fn api_install(
             "仅支持使用 Safari 浏览器打开并安装",
         );
     }
-    if let Err(response) = sanitize_file(&file) {
-        return response;
+    let path = match sanitize_file(&file) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    // 兼容本功能上线前下载的文件：安装前补一次（已无该文件时只读 zip 目录）。
+    match tokio::task::spawn_blocking(move || store::ipa::strip_itunes_metadata(&path)).await {
+        Ok(Ok(true)) => store::log_info!("ota", "stripped update metadata file={file}"),
+        Ok(Ok(false)) => {}
+        Ok(Err(error)) => store::log_warn!(
+            "ota",
+            "strip update metadata failed file={file} error={error}"
+        ),
+        Err(error) => store::log_warn!(
+            "ota",
+            "strip update metadata task failed file={file} error={error}"
+        ),
     }
     let token = s.install_tokens.issue(&file);
     store::log_info!("ota", "install link issued file={file}");
@@ -1617,6 +1656,16 @@ mod tests {
     }
 
     #[test]
+    fn search_cache_is_bounded() {
+        let mut cache = SearchEntries::default();
+        for index in 0..(MAX_SEARCH_CACHE_ENTRIES + 10) {
+            prune_search_cache(&mut cache);
+            cache.insert(format!("term{index}"), (Instant::now(), Vec::new()));
+        }
+        assert_eq!(cache.len(), MAX_SEARCH_CACHE_ENTRIES);
+    }
+
+    #[test]
     fn downloaded_filenames_recover_the_selected_platform() {
         assert_eq!(
             downloaded_file_platform("com.example_1.ipa"),
@@ -1703,6 +1752,13 @@ mod tests {
         assert!(constant_time_eq(b"secret", b"secret"));
         assert!(!constant_time_eq(b"secret", b"Secret"));
         assert!(!constant_time_eq(b"secret", b"secret-longer"));
+    }
+
+    #[test]
+    fn missing_store_provisioning_is_explained_and_requires_relogin() {
+        let raw = "generate Store AMD proof: store AMD state is not provisioned";
+        assert!(friendly_msg(raw).contains("重新登录"));
+        assert!(is_auth_problem(raw));
     }
 
     fn headers_with_user_agent(user_agent: &str) -> HeaderMap {

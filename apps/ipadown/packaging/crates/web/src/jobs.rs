@@ -24,6 +24,9 @@ pub(super) struct Job {
     error: Option<String>,
     /// 前端据此弹出双重认证对话框，而不是解析错误文案。
     needs_2fa: bool,
+    /// 旧会话缺少 ipatool 2.8 的设备证明状态，前端据此弹出重新登录框。
+    #[serde(default)]
+    needs_login: bool,
     #[serde(skip_serializing)]
     created_at: u64,
 }
@@ -49,6 +52,7 @@ impl Job {
             total,
             error: None,
             needs_2fa: false,
+            needs_login: false,
             created_at: unix_now(),
         }
     }
@@ -56,6 +60,7 @@ impl Job {
     fn record_failure(&mut self, error: &store::StoreError) {
         self.status = "error".into();
         self.needs_2fa = needs_two_factor(error);
+        self.needs_login = needs_reprovision(error);
         self.error = Some(if self.needs_2fa {
             "需要双重验证码，请完成验证后重试下载".into()
         } else {
@@ -66,6 +71,15 @@ impl Job {
 
 pub(super) fn needs_two_factor(error: &store::StoreError) -> bool {
     matches!(error, store::StoreError::CodeRequired)
+}
+
+/// 旧版本（ipatool 2.7）登录的会话没有 2.8 需要的设备证明状态，
+/// 只能重新登录补上，没有离线修复途径。
+fn needs_reprovision(error: &store::StoreError) -> bool {
+    error
+        .to_string()
+        .to_lowercase()
+        .contains("store amd state is not provisioned")
 }
 
 #[derive(Clone)]
@@ -150,11 +164,14 @@ pub(super) fn list(reg: &Registry) -> Vec<Job> {
 }
 
 /// 账号重新认证成功后，移除该账号此前因 2FA 失败的任务。
-pub(super) fn clear_two_factor_failures(reg: &Registry, account: &str) -> usize {
+/// 登录成功后清理该账号因 2FA / 设备证明缺失而失败的任务（重登后会重新发起）。
+pub(super) fn clear_auth_failures(reg: &Registry, account: &str) -> usize {
     let mut jobs = jobs_map(reg);
     let before = jobs.len();
     jobs.retain(|_, job| {
-        !(job.needs_2fa && job.status == "error" && job.account.eq_ignore_ascii_case(account))
+        !((job.needs_2fa || job.needs_login)
+            && job.status == "error"
+            && job.account.eq_ignore_ascii_case(account))
     });
     before - jobs.len()
 }
@@ -367,15 +384,31 @@ pub(super) fn resume_job(
 }
 
 /// 删除任务记录；进行中的任务会先被中止。
-pub(super) fn remove_job(reg: &Registry, id: &str) -> bool {
-    let removed = jobs_map(reg).remove(id).is_some();
-    if removed {
-        if let Some(handle) = handles_map(reg).remove(id) {
-            handle.abort();
-        }
-        store::log_info!("download", "job removed id={id}");
+/// 返回 `Some(Some(文件名))` 表示可清理对应的断点文件；
+/// `Some(None)` 表示已删除但断点仍被其他任务引用（或无需清理）；`None` 表示任务不存在。
+pub(super) fn remove_job(reg: &Registry, id: &str) -> Option<Option<String>> {
+    let mut jobs = jobs_map(reg);
+    let job = jobs.remove(id)?;
+    let filename = download_filename(&job.bundle_id, job.version_id.as_deref(), job.platform)
+        .unwrap_or_default();
+    // 同版本可能同时存在暂停任务，断点文件仍会被续传时不能删。
+    let shared = jobs.values().any(|other| {
+        matches!(other.status.as_str(), "queued" | "downloading" | "paused")
+            && download_filename(
+                &other.bundle_id,
+                other.version_id.as_deref(),
+                other.platform,
+            )
+            .ok()
+            .as_deref()
+                == Some(filename.as_str())
+    });
+    drop(jobs);
+    if let Some(handle) = handles_map(reg).remove(id) {
+        handle.abort();
     }
-    removed
+    store::log_info!("download", "job removed id={id}");
+    Some((!shared).then_some(filename))
 }
 
 /// 任务归属账号（用于继续下载时构建对应账号的 ipatool）。
@@ -451,6 +484,23 @@ async fn run_download(
     watcher.abort();
     result?;
 
+    // 去掉商店购买信息：它不在签名的 .app 内，删除后原版签名仍有效，
+    // 但 iOS 不再把它当作 App Store 购买项，安装后不会提示更新。
+    let strip_path = output.clone();
+    match tokio::task::spawn_blocking(move || store::ipa::strip_itunes_metadata(&strip_path)).await
+    {
+        Ok(Ok(true)) => store::log_info!("download", "stripped update metadata file={filename}"),
+        Ok(Ok(false)) => {}
+        Ok(Err(error)) => store::log_warn!(
+            "download",
+            "strip update metadata failed file={filename} error={error}"
+        ),
+        Err(error) => store::log_warn!(
+            "download",
+            "strip update metadata task failed file={filename} error={error}"
+        ),
+    }
+
     let size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
     update(reg, id, |j| {
         j.status = "done".into();
@@ -467,7 +517,7 @@ async fn run_download(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_two_factor_failures, download_filename, job_account, jobs_map, list, new_registry,
+        clear_auth_failures, download_filename, job_account, jobs_map, list, new_registry,
         pause_job, remove_job, reserve_job, Job, MAX_PENDING_DOWNLOADS,
     };
     use ipadown_store::search::DevicePlatform;
@@ -518,6 +568,29 @@ mod tests {
         assert_eq!(job.status, "error");
         assert!(job.needs_2fa);
         assert!(job.error.is_some());
+    }
+
+    #[test]
+    fn missing_store_provisioning_asks_for_relogin() {
+        let mut job = Job::new(
+            "job-1",
+            "com.example.app",
+            Some("123"),
+            DevicePlatform::Iphone,
+            "a@example.com",
+            None,
+        );
+
+        job.record_failure(&StoreError::AuthFailed(
+            "generate Store AMD proof: store AMD state is not provisioned".into(),
+        ));
+
+        assert!(job.needs_login);
+        assert!(!job.needs_2fa);
+        assert!(job
+            .error
+            .as_deref()
+            .is_some_and(|text| text.contains("重新登录")));
     }
 
     #[test]
@@ -572,7 +645,7 @@ mod tests {
         jobs.insert(other_account.id.clone(), other_account);
         drop(jobs);
 
-        assert_eq!(clear_two_factor_failures(&registry, "a@example.com"), 1);
+        assert_eq!(clear_auth_failures(&registry, "a@example.com"), 1);
         let remaining = list(&registry);
         assert_eq!(remaining.len(), 2);
         assert!(remaining.iter().all(|job| job.id != "job-1"));
@@ -646,9 +719,31 @@ mod tests {
             job_account(&registry, "job-1").as_deref(),
             Some("a@example.com")
         );
-        assert!(remove_job(&registry, "job-1"));
+        assert_eq!(
+            remove_job(&registry, "job-1"),
+            Some(Some("com.example.app_1.ipa".into()))
+        );
         assert!(list(&registry).is_empty());
-        assert!(!remove_job(&registry, "job-1"));
+        assert_eq!(remove_job(&registry, "job-1"), None);
+    }
+
+    #[test]
+    fn remove_keeps_breakpoint_shared_with_another_job() {
+        let registry = new_registry();
+        for (id, status) in [("job-1", "paused"), ("job-2", "downloading")] {
+            let mut job = Job::new(
+                id,
+                "com.example.app",
+                Some("1"),
+                DevicePlatform::Iphone,
+                "a@example.com",
+                None,
+            );
+            job.status = status.into();
+            jobs_map(&registry).insert(id.to_string(), job);
+        }
+
+        assert_eq!(remove_job(&registry, "job-1"), Some(None));
     }
 
     #[test]

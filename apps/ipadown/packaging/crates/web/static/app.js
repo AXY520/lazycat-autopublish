@@ -346,6 +346,7 @@ async function refreshSession() {
 }
 let pendingDownload=null;
 const prompted2faJobs=new Set();
+const promptedReloginJobs=new Set();
 function openLoginModal(requireCode=false,email='',notice='') {
   const selectedEmail=email || accounts.find(account=>account.current)?.email || '';
   openModal(`<h3>${requireCode ? '完成双重认证' : '登录 Apple ID'}</h3><div class="login-form">
@@ -608,6 +609,12 @@ async function pollJobs() {
     prompted2faJobs.add(challenge.id); pendingDownload={bundleId:challenge.bundle_id,versionId:challenge.version_id || null,platform:challenge.platform || 'iphone',size:challenge.total || null};
     showAuthBanner(true,true);
     openLoginModal(true,challenge.account,'下载任务需要双重认证。验证成功后会自动重试。');
+  }
+  const relogin=list.find(job=>job.needs_login && !promptedReloginJobs.has(job.id));
+  if (relogin) {
+    promptedReloginJobs.add(relogin.id); pendingDownload={bundleId:relogin.bundle_id,versionId:relogin.version_id || null,platform:relogin.platform || 'iphone',size:relogin.total || null};
+    showAuthBanner(true,false);
+    openLoginModal(false,relogin.account,'登录状态缺少新版下载所需的设备证明。重新输入密码登录后会自动重试。');
   }
   return list.some(job=>job.status==='queued' || job.status==='downloading');
 }
