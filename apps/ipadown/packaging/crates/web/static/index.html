@@ -157,6 +157,15 @@
   .account-actions { display:flex; gap:8px; }
   .empty-state { min-height:116px; display:grid; place-items:center; align-content:center; gap:12px; color:var(--ui-muted); }
   .group-title { margin-bottom:3px; color:var(--ui-muted); font-size:12px; font-weight:650; }
+  .setting-row { display:flex; align-items:center; gap:12px; min-height:34px; cursor:pointer; }
+  .setting-row > span:first-child { flex:1; }
+  .switch { position:relative; width:44px; height:26px; flex:none; }
+  .switch input { position:absolute; inset:0; margin:0; opacity:0; cursor:pointer; }
+  .switch i { position:absolute; inset:0; border:1px solid var(--ui-border); border-radius:999px; background:var(--ui-input); pointer-events:none; transition:background var(--ui-fast),border-color var(--ui-fast); }
+  .switch i::after { content:''; position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%; background:var(--ui-text); opacity:.85; transition:transform var(--ui-fast),opacity var(--ui-fast); }
+  .switch input:checked + i { border-color:transparent; background:var(--ui-success); }
+  .switch input:checked + i::after { transform:translateX(18px); background:#fff; opacity:1; }
+  .switch input:focus-visible + i { box-shadow:var(--ui-focus); }
   .app-row { padding:10px 0; display:flex; align-items:center; gap:11px; border-bottom:1px solid var(--ui-border-subtle); }
   .app-row:last-child { border-bottom:0; }
   .app-row img { width:46px; height:46px; flex:none; border-radius:11px; background:var(--ui-input); }
@@ -337,6 +346,10 @@
   <section class="app-panel hidden" id="panel-account" data-tab-panel="account">
     <div class="page-heading"><div class="sec-title">账户</div><button type="button" class="ghost" data-act="open-login">添加</button></div>
     <div class="card" id="accounts"><div class="dim">加载中…</div></div>
+    <div class="card">
+      <div class="group-title">安装</div>
+      <label class="setting-row"><span>屏蔽 App Store 更新提示</span><span class="switch"><input type="checkbox" id="block-updates" aria-label="安装时屏蔽 App Store 更新提示"><i></i></span></label>
+    </div>
   </section>
   <section class="app-panel" id="panel-search" data-tab-panel="search">
     <div class="page-heading"><div class="sec-title">搜索</div></div>

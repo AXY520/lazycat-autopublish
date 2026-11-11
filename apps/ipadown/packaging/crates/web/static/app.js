@@ -754,6 +754,12 @@ async function init() {
   appInitialized=true;
   const config=await api('/api/config').catch(()=>({}));
   if (!config.public_base_url && location.protocol !== 'https:') document.getElementById('https-warn').classList.remove('hidden');
+  const blockToggle=document.getElementById('block-updates');
+  blockToggle.checked=config.block_app_store_updates !== false;
+  blockToggle.addEventListener('change', async () => {
+    try { await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({block_app_store_updates:blockToggle.checked})}); }
+    catch (error) { blockToggle.checked=!blockToggle.checked; toast('❌ '+error.message,true); }
+  });
   renderPlatformSwitch(); showTab(storedTab(),false); rebuildCountryOptions(); refreshAccounts(); refreshFiles(); keepJobsUpdated();
 }
 init();

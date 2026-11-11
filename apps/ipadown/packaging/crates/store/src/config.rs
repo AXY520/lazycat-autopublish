@@ -34,6 +34,13 @@ pub struct Config {
     /// 当前选中账号（所有商店操作走该账号）
     #[serde(default)]
     pub current_account: Option<String>,
+    /// 安装前移除 iTunesMetadata.plist，使 App Store 不再提示更新（默认开启）
+    #[serde(default = "default_true")]
+    pub block_app_store_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -115,6 +122,7 @@ impl Config {
             keychain_passphrase: random_passphrase(),
             accounts: Vec::new(),
             current_account: None,
+            block_app_store_updates: true,
         };
         let data = serde_json::to_string_pretty(&cfg)?;
         write_private(&path, data.as_bytes())?;

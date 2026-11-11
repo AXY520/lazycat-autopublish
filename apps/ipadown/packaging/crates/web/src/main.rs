@@ -433,6 +433,7 @@ async fn main() {
             axum::routing::get(|| async { ([(header::CONTENT_TYPE, "image/png")], ICON_PNG) }),
         )
         .route("/api/config", axum::routing::get(api_config))
+        .route("/api/settings", axum::routing::post(api_settings))
         .route("/api/auth/login", axum::routing::post(api_login))
         .route("/api/auth/logout", axum::routing::post(api_logout))
         .route("/api/auth/accounts", axum::routing::get(api_accounts))
@@ -676,9 +677,36 @@ fn base_url(state: &AppState, headers: &HeaderMap, uri: &axum::http::Uri) -> Str
 // ---------- API ----------
 
 async fn api_config(State(s): State<AppState>) -> impl IntoResponse {
+    let block_updates = store::config::Config::load_or_create()
+        .map(|config| config.block_app_store_updates)
+        .unwrap_or(true);
     Json(serde_json::json!({
         "public_base_url": s.public_base_url,
+        "block_app_store_updates": block_updates,
     }))
+}
+
+#[derive(Deserialize)]
+struct SettingsReq {
+    block_app_store_updates: bool,
+}
+
+/// 安装时是否移除 iTunesMetadata.plist（安装前生效，已安装的应用不受影响）
+async fn api_settings(Json(req): Json<SettingsReq>) -> Response {
+    match store::config::update(|config| {
+        config.block_app_store_updates = req.block_app_store_updates;
+        Ok(())
+    }) {
+        Ok(()) => {
+            store::log_info!(
+                "settings",
+                "block_app_store_updates={}",
+                req.block_app_store_updates
+            );
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
+        Err(error) => store_err(error),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1371,17 +1399,31 @@ async fn api_install(
         Ok(path) => path,
         Err(response) => return response,
     };
-    // 兼容本功能上线前下载的文件：安装前补一次（已无该文件时只读 zip 目录）。
-    match tokio::task::spawn_blocking(move || store::ipa::strip_itunes_metadata(&path)).await {
-        Ok(Ok(true)) => store::log_info!("ota", "stripped update metadata file={file}"),
+    let block_updates = store::config::Config::load_or_create()
+        .map(|config| config.block_app_store_updates)
+        .unwrap_or(true);
+    let install_path = path;
+    let outcome = tokio::task::spawn_blocking(move || {
+        if block_updates {
+            store::ipa::strip_itunes_metadata(&install_path)
+        } else {
+            store::ipa::restore_itunes_metadata(&install_path)
+        }
+    })
+    .await;
+    match outcome {
+        Ok(Ok(true)) => store::log_info!(
+            "ota",
+            "adjusted update metadata file={file} block_updates={block_updates}"
+        ),
         Ok(Ok(false)) => {}
         Ok(Err(error)) => store::log_warn!(
             "ota",
-            "strip update metadata failed file={file} error={error}"
+            "adjust update metadata failed file={file} error={error}"
         ),
         Err(error) => store::log_warn!(
             "ota",
-            "strip update metadata task failed file={file} error={error}"
+            "adjust update metadata task failed file={file} error={error}"
         ),
     }
     let token = s.install_tokens.issue(&file);

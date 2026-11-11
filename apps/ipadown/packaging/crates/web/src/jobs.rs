@@ -484,23 +484,6 @@ async fn run_download(
     watcher.abort();
     result?;
 
-    // 去掉商店购买信息：它不在签名的 .app 内，删除后原版签名仍有效，
-    // 但 iOS 不再把它当作 App Store 购买项，安装后不会提示更新。
-    let strip_path = output.clone();
-    match tokio::task::spawn_blocking(move || store::ipa::strip_itunes_metadata(&strip_path)).await
-    {
-        Ok(Ok(true)) => store::log_info!("download", "stripped update metadata file={filename}"),
-        Ok(Ok(false)) => {}
-        Ok(Err(error)) => store::log_warn!(
-            "download",
-            "strip update metadata failed file={filename} error={error}"
-        ),
-        Err(error) => store::log_warn!(
-            "download",
-            "strip update metadata task failed file={filename} error={error}"
-        ),
-    }
-
     let size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
     update(reg, id, |j| {
         j.status = "done".into();
