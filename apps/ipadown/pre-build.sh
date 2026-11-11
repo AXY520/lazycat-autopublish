@@ -70,15 +70,16 @@ done
 grep -q "^ARG IPATOOL_VERSION=$UPVER" "$PKG_DIR/Dockerfile" || { echo "pre-build: IPATOOL_VERSION 写入失败" >&2; exit 1; }
 
 # ── 3. 更新日志（ipatool 原文 → 中英导向文案） ──
+NOTES="$(cat /tmp/changelog.en.md 2>/dev/null || true)"
 cat > /tmp/changelog.zh.md <<EOF
-修复登录失败：镜像内置 Apple 根证书，解决 gsa.apple.com 证书链不受信任、无法完成设备证明初始化的问题。
-
-下载仍提示需要登录时，重新登录一次即可；页面会自动弹出登录框并在登录后重试。
+升级内置 ipatool 至 v$UPVER，跟进 App Store 下载协议的修复与改进（登录兼容、下载可靠性等）。
+上游更新说明：
+$NOTES
 EOF
 cat > /tmp/changelog.en.md <<EOF
-Fix sign-in failures by bundling the Apple Root CA, so the gsa.apple.com certificate chain can be verified and device-proof initialization can complete.
-
-If a download still asks you to sign in, sign in once more; the app opens the dialog automatically and retries after login.
+Update the bundled ipatool to v$UPVER, following upstream App Store download protocol fixes and improvements (login compatibility, download reliability, etc.).
+Upstream release notes:
+$NOTES
 EOF
 
 # ── 4. 最终版本号交还 sync.sh ──
