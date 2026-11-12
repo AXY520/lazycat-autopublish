@@ -13,7 +13,7 @@ RUN --mount=type=cache,id=ipadown-cargo-registry,target=/usr/local/cargo/registr
 # ---------- 运行 ----------
 FROM debian:bookworm-slim
 ARG TARGETARCH
-ARG IPATOOL_VERSION=2.8.0
+ARG IPATOOL_VERSION=2.8.1
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 # Apple Root CA：gsa.apple.com（ipatool 2.8 登录/设备证明）证书链的根；Debian/Mozilla
@@ -24,8 +24,8 @@ RUN update-ca-certificates
 # 2.7.0 修复 redownload 请求被苹果 403 拒绝（空响应体）的问题
 RUN arch="${TARGETARCH:-amd64}" \
     && case "$arch" in \
-         amd64) expected="3f837a01fb4d291f45a98713a06c77b1f5a0a9611b734c9dcd80be607ea12914" ;; \
-         arm64) expected="57ed54aee901950d46fe02d7af9bf85f83ab2c0f0ae6f121258d3c19e4d040bf" ;; \
+         amd64) expected="c5a7d35d98a0ac41fbb9d21c19437c3e6006c6e32556f484d09ed26872f9c283" ;; \
+         arm64) expected="64dc6311acbd92f8165fe382ee86852f520b23355dae65933cb0f60177357116" ;; \
          *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
        esac \
     && curl -sfL --retry 5 --retry-all-errors --retry-delay 5 \
