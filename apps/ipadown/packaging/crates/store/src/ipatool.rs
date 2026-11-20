@@ -10,10 +10,59 @@
 use crate::config::{ipatool_home_for, legacy_ipatool_home, AccountMeta, Config};
 use crate::error::{Result, StoreError};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 const IPATOOL_BIN: &str = "ipatool";
+
+/// ipatool 2.8 登录/下载时用 Unicorn 模拟 storeagent：首次使用会从 PyPI 下载
+/// unicorn wheel（约 16MB）并解出 libunicorn.so.2，缓存到 `$HOME/.cache/ipatool`。
+/// 官方源在国内基本跑不动，而 ipatool 内置的 HTTP 超时是 2 分钟，登录必然失败。
+/// 镜像构建时已预置校验过的运行库（见 Dockerfile），这里按 ipatool 的缓存布局放好。
+const UNICORN_VERSION: &str = "2.1.4";
+const UNICORN_LIB_FILE: &str = "libunicorn.so.2";
+#[cfg(target_arch = "x86_64")]
+const UNICORN_LIB_SHA256: &str = "ddb196ec82b52e502c18e4a34478bf7b9f61c83c2ebaa95c74d8ded45a95da9c";
+#[cfg(target_arch = "aarch64")]
+const UNICORN_LIB_SHA256: &str = "a0b99458a82e268aee258205a40590411c3a9f28e42abf2942ce4e87b7d9ac65";
+const BUNDLED_UNICORN_ROOT: &str = "/usr/local/share/ipatool/unicorn";
+
+/// 把预置的 Unicorn 运行库复制到账号 HOME 下 ipatool 期望的位置。
+/// 返回 Ok(false) 表示没有预置库（本地开发），交给 ipatool 自己下载。
+fn seed_unicorn_cache_from(root: &Path, home: &Path) -> std::io::Result<bool> {
+    let source = root
+        .join(UNICORN_VERSION)
+        .join(UNICORN_LIB_SHA256)
+        .join(UNICORN_LIB_FILE);
+    if !source.is_file() {
+        return Ok(false);
+    }
+
+    let dir = home
+        .join(".cache/ipatool/unicorn")
+        .join(UNICORN_VERSION)
+        .join(UNICORN_LIB_SHA256);
+    let target = dir.join(UNICORN_LIB_FILE);
+    if target.is_file() {
+        return Ok(true);
+    }
+
+    fs::create_dir_all(&dir)?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let temporary = dir.join(".libunicorn.seed");
+    fs::copy(&source, &temporary)?;
+    fs::rename(&temporary, &target)?;
+    Ok(true)
+}
+
+fn seed_unicorn_cache(home: &Path) -> std::io::Result<bool> {
+    let root = std::env::var_os("IPATOOL_UNICORN_SRC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(BUNDLED_UNICORN_ROOT));
+    seed_unicorn_cache_from(&root, home)
+}
 
 pub struct SessionInfo {
     pub email: String,
@@ -75,6 +124,9 @@ impl Ipatool {
 
     /// 运行 ipatool 子命令，返回最后一行 JSON（约 10 分钟超时，首次登录需下载并模拟 storeagent）
     async fn run_once(&self, args: &[&str]) -> Result<serde_json::Value> {
+        if let Err(e) = seed_unicorn_cache(&self.home) {
+            crate::log_warn!("ipatool", "seed Unicorn cache: {e}");
+        }
         let started = std::time::Instant::now();
         let mut cmd = Command::new(IPATOOL_BIN);
         cmd.args(args)
@@ -521,5 +573,35 @@ mod tests {
         assert_eq!(meta.email, "test@example.com");
         assert_eq!(meta.name.as_deref(), Some("Test User"));
         assert_eq!(meta.country.as_deref(), Some("CN"));
+    }
+
+    #[test]
+    fn seeds_unicorn_cache_once() {
+        let base =
+            std::env::temp_dir().join(format!("ipadown-unicorn-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("bundle");
+        let home = base.join("home");
+        let source = root
+            .join(super::UNICORN_VERSION)
+            .join(super::UNICORN_LIB_SHA256);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join(super::UNICORN_LIB_FILE), b"library").unwrap();
+
+        assert!(super::seed_unicorn_cache_from(&root, &home).unwrap());
+        let seeded = home
+            .join(".cache/ipatool/unicorn")
+            .join(super::UNICORN_VERSION)
+            .join(super::UNICORN_LIB_SHA256)
+            .join(super::UNICORN_LIB_FILE);
+        assert_eq!(std::fs::read(&seeded).unwrap(), b"library");
+        // 第二次调用是幂等的
+        assert!(super::seed_unicorn_cache_from(&root, &home).unwrap());
+
+        // 没有预置库时交给 ipatool 自己下载
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(!super::seed_unicorn_cache_from(&empty, &home).unwrap());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
