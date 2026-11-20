@@ -1,6 +1,8 @@
 name: lazycat-store-publish
 
 on:
+  push:
+    branches: [main]
   schedule:
     # 每 6 小时检查一次各应用上游 release（分钟值错开整点）
     - cron: "23 */6 * * *"
@@ -30,8 +32,8 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       LAZYCAT_APPSTORE_USER: ${{ secrets.LAZYCAT_APPSTORE_USER }}
       LAZYCAT_APPSTORE_PASS: ${{ secrets.LAZYCAT_APPSTORE_PASS }}
-      FORCE: ${{ inputs.force && '1' || '0' }}
-      SELECTED_APP: ${{ inputs.app || 'all' }}
+      FORCE: '1'
+      SELECTED_APP: ipadown
     steps:
       - uses: actions/checkout@v4
 

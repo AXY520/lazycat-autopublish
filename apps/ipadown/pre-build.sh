@@ -69,18 +69,17 @@ for arch in amd64 arm64; do
 done
 grep -q "^ARG IPATOOL_VERSION=$UPVER" "$PKG_DIR/Dockerfile" || { echo "pre-build: IPATOOL_VERSION 写入失败" >&2; exit 1; }
 
-# ── 3. 更新日志（ipatool 原文 → 中英导向文案） ──
-NOTES="$(cat /tmp/changelog.en.md 2>/dev/null || true)"
-cat > /tmp/changelog.zh.md <<EOF
-升级内置 ipatool 至 v$UPVER，跟进 App Store 下载协议的修复与改进（登录兼容、下载可靠性等）。
-上游更新说明：
-$NOTES
-EOF
-cat > /tmp/changelog.en.md <<EOF
-Update the bundled ipatool to v$UPVER, following upstream App Store download protocol fixes and improvements (login compatibility, download reliability, etc.).
-Upstream release notes:
-$NOTES
-EOF
+# ── 3. 更新日志（本版专属） ──
+cat > /tmp/changelog.zh.md <<'ZHEOF'
+内置 ipatool 升级到 v2.8.1：修复登录弹窗处理，加速 Apple 侧资源下载。
+修复登录时 Unicorn 运行库下载超时（镜像内预置），以及懒猫沙箱内 Apple 根证书缺失导致登录报 HTTP 403 的问题：ipatool 显式使用镜像内的合并证书包。
+首次登录仍可能需要数分钟下载 Apple 侧资源，请耐心等待。
+ZHEOF
+cat > /tmp/changelog.en.md <<'ENEOF'
+Bundled ipatool 2.8.1: better auth dialog handling and faster Apple asset downloads.
+Fixed the login timeout while downloading the Unicorn runtime (now bundled in the image), and the HTTP 403 caused by the missing Apple root certificate inside the LazyCat sandbox: ipatool now uses a merged CA bundle shipped in the image.
+The first login may still take a few minutes to download Apple-side assets.
+ENEOF
 
 # ── 4. 最终版本号交还 sync.sh ──
 printf '%s' "$NEW_VERSION" > "$APP_DIR/.version"
