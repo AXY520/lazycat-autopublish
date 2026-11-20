@@ -28,6 +28,8 @@ const UNICORN_LIB_SHA256: &str = "ddb196ec82b52e502c18e4a34478bf7b9f61c83c2ebaa9
 #[cfg(target_arch = "aarch64")]
 const UNICORN_LIB_SHA256: &str = "a0b99458a82e268aee258205a40590411c3a9f28e42abf2942ce4e87b7d9ac65";
 const BUNDLED_UNICORN_ROOT: &str = "/usr/local/share/ipatool/unicorn";
+/// 系统根证书 + Apple Root CA 的合并包：懒猫沙箱的 /etc/ssl 只读且不含 Apple 根。
+const CA_BUNDLE: &str = "/usr/local/share/ipatool/ca-bundle.pem";
 
 /// 把预置的 Unicorn 运行库复制到账号 HOME 下 ipatool 期望的位置。
 /// 返回 Ok(false) 表示没有预置库（本地开发），交给 ipatool 自己下载。
@@ -134,6 +136,11 @@ impl Ipatool {
             .env("HOME", &self.home)
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .kill_on_drop(true);
+        if Path::new(CA_BUNDLE).is_file() {
+            // 沙箱 /etc/ssl 只读，必须显式指定带 Apple 根的证书包，否则 ipatool
+            // 会走"下载 Apple 根证书"的兜底路径并拿到 HTTP 403。
+            cmd.env("SSL_CERT_FILE", CA_BUNDLE);
+        }
         let output =
             match tokio::time::timeout(std::time::Duration::from_secs(600), cmd.output()).await {
                 Ok(Ok(o)) => o,
