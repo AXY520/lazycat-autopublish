@@ -17,6 +17,9 @@ concurrency:
   group: moviepilot-release
   cancel-in-progress: false
 
+env:
+  LPK_REVISION: "1"
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -31,7 +34,7 @@ jobs:
           upstream="$(gh api repos/jxxghp/MoviePilot/releases/latest --jq .tag_name)"
           [[ "$upstream" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           version="${upstream#v}"
-          tag="moviepilot-$upstream"
+          tag="moviepilot-$upstream-lpk.$LPK_REVISION"
           asset="MoviePilot-$version-linux-amd64.lpk"
           # 查询失败时停止，避免把 GitHub 错误当成 Release 缺失。
           existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
@@ -86,7 +89,10 @@ jobs:
           lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS"
           output="$(lzc-cli appstore copy-image "$source@$digest" --arch amd64 --trace-level quiet)"
           image="$(grep -xE 'registry\.lazycat\.cloud/[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+' <<< "$output" | tail -1)"
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          {
+            echo "image=$image"
+            echo "source_image=$source@$digest"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and verify LPK
         if: steps.plan.outputs.has_asset == 'false'
@@ -94,6 +100,13 @@ jobs:
           VERSION: ${{ steps.plan.outputs.version }}
           IMAGE: ${{ steps.mirror.outputs.image }}
         run: bash release-apps/moviepilot/build.sh "$VERSION" "$IMAGE" "$RUNNER_TEMP/moviepilot"
+
+      - name: Verify cold startup without network
+        if: steps.plan.outputs.has_asset == 'false'
+        env:
+          SOURCE_IMAGE: ${{ steps.mirror.outputs.source_image }}
+          ASSET: ${{ steps.plan.outputs.asset }}
+        run: bash release-apps/moviepilot/smoke.sh "$SOURCE_IMAGE" "$RUNNER_TEMP/moviepilot/$ASSET"
 
       - name: Publish GitHub Release
         if: steps.plan.outputs.has_asset == 'false' || steps.plan.outputs.draft == 'true'
@@ -110,10 +123,10 @@ jobs:
           file="$RUNNER_TEMP/moviepilot/$ASSET"
           if [ "$RELEASE_EXISTS" = false ]; then
             notes="$RUNNER_TEMP/moviepilot-notes.md"
-            printf 'MoviePilot %s 的懒猫微服 LPK V2，适用于 Linux x86_64 和 lzcos 1.5.0 及以上版本。\n\n[上游发布说明](https://github.com/jxxghp/MoviePilot/releases/tag/v%s)\n' \
+            printf 'MoviePilot %s 的懒猫微服 LPK V2，适用于 Linux x86_64 和 lzcos 1.5.0 及以上版本。CloakBrowser 内核在首次使用时下载。\n\n[上游发布说明](https://github.com/jxxghp/MoviePilot/releases/tag/v%s)\n' \
               "$VERSION" "$VERSION" > "$notes"
             gh release create "$TAG" "$file" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --title "MoviePilot $VERSION (x86_64)" --notes-file "$notes" --latest=false
+              --title "MoviePilot $VERSION (x86_64, LPK $LPK_REVISION)" --notes-file "$notes" --latest=false
           else
             if [ "$HAS_ASSET" = false ]; then
               gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"

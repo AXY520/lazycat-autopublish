@@ -16,6 +16,7 @@ mkdir -p "$output_dir"
 stage="$(mktemp -d)"
 trap 'rm -rf -- "$stage"' EXIT
 cp "$app_dir"/packaging/{package.yml,lzc-manifest.yml,lzc-build.yml,icon.png} "$stage/"
+cp -R "$app_dir/packaging/content" "$stage/"
 sed -i -E "s/^version: .*/version: \"$version\"/" "$stage/package.yml"
 sed -i -E "s#^    image: .*#    image: $image#" "$stage/lzc-manifest.yml"
 
