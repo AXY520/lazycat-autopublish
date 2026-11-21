@@ -1,0 +1,24 @@
+package: org.moviepilot.lazycat
+version: "3.2.9"
+name: MoviePilot
+description: 自动搜索、订阅和整理 NAS 媒体库。
+author: jxxghp
+license: GPL-3.0
+homepage: https://github.com/jxxghp/MoviePilot
+min_os_version: "1.5.0"
+locales:
+  zh-CN:
+    name: MoviePilot
+    description: 自动搜索、订阅和整理 NAS 媒体库。
+  en-US:
+    name: MoviePilot
+    description: Automatically search, subscribe to, and organize media for your NAS library.
+permissions:
+  required:
+    - net.internet
+    - document.read
+    - document.write
+  optional:
+    - net.lan
+    - media.read
+    - media.write

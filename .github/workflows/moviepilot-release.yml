@@ -1,0 +1,125 @@
+name: MoviePilot LPK Release
+
+on:
+  schedule:
+    - cron: "31 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moviepilot-release.yml
+      - release-apps/moviepilot/**
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moviepilot-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check upstream release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream="$(gh api repos/jxxghp/MoviePilot/releases/latest --jq .tag_name)"
+          [[ "$upstream" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${upstream#v}"
+          tag="moviepilot-$upstream"
+          asset="MoviePilot-$version-linux-amd64.lpk"
+          # 查询失败时停止，避免把 GitHub 错误当成 Release 缺失。
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\")")"
+          has_asset=false
+          draft=false
+          if [ -n "$existing" ]; then
+            draft="$(jq -r .draft <<< "$existing")"
+            if jq -e --arg name "$asset" 'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' \
+                <<< "$existing" >/dev/null; then
+              has_asset=true
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "asset=$asset"
+            echo "exists=$([ -n "$existing" ] && echo true || echo false)"
+            echo "has_asset=$has_asset"
+            echo "draft=$draft"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$has_asset" = true ] && [ "$draft" = false ]; then
+            echo "$tag 已包含 $asset"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.plan.outputs.has_asset == 'false'
+
+      - uses: actions/setup-node@v4
+        if: steps.plan.outputs.has_asset == 'false'
+        with:
+          node-version: "22"
+
+      - name: Install lzc-cli
+        if: steps.plan.outputs.has_asset == 'false'
+        run: npm install -g @lazycatcloud/lzc-cli@2.0.10
+
+      - name: Mirror amd64 image to Lazycat registry
+        id: mirror
+        if: steps.plan.outputs.has_asset == 'false'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          LAZYCAT_APPSTORE_USER: ${{ secrets.LAZYCAT_APPSTORE_USER }}
+          LAZYCAT_APPSTORE_PASS: ${{ secrets.LAZYCAT_APPSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          source=ghcr.io/jxxghp/moviepilot
+          digest="$(docker buildx imagetools inspect --raw "$source:$VERSION" | jq -er \
+            '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest]
+             | select(length == 1) | .[0]')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS"
+          output="$(lzc-cli appstore copy-image "$source@$digest" --arch amd64 --trace-level quiet)"
+          image="$(grep -xE 'registry\.lazycat\.cloud/[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+' <<< "$output" | tail -1)"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Build and verify LPK
+        if: steps.plan.outputs.has_asset == 'false'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          IMAGE: ${{ steps.mirror.outputs.image }}
+        run: bash release-apps/moviepilot/build.sh "$VERSION" "$IMAGE" "$RUNNER_TEMP/moviepilot"
+
+      - name: Publish GitHub Release
+        if: steps.plan.outputs.has_asset == 'false' || steps.plan.outputs.draft == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          ASSET: ${{ steps.plan.outputs.asset }}
+          RELEASE_EXISTS: ${{ steps.plan.outputs.exists }}
+          HAS_ASSET: ${{ steps.plan.outputs.has_asset }}
+          IS_DRAFT: ${{ steps.plan.outputs.draft }}
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/moviepilot/$ASSET"
+          if [ "$RELEASE_EXISTS" = false ]; then
+            notes="$RUNNER_TEMP/moviepilot-notes.md"
+            printf 'MoviePilot %s 的懒猫微服 LPK V2，适用于 Linux x86_64 和 lzcos 1.5.0 及以上版本。\n\n[上游发布说明](https://github.com/jxxghp/MoviePilot/releases/tag/v%s)\n' \
+              "$VERSION" "$VERSION" > "$notes"
+            gh release create "$TAG" "$file" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "MoviePilot $VERSION (x86_64)" --notes-file "$notes" --latest=false
+          else
+            if [ "$HAS_ASSET" = false ]; then
+              gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
+            fi
+            if [ "$IS_DRAFT" = true ]; then
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+            fi
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url | tee -a "$GITHUB_STEP_SUMMARY"

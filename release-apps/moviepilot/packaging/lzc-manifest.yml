@@ -1,0 +1,49 @@
+application:
+  subdomain: moviepilot
+  multi_instance: true
+  routes:
+    - /=http://moviepilot:3000/
+
+services:
+  moviepilot:
+    image: registry.lazycat.cloud/aixinyin/jxxghp/moviepilot:2f74064260711f82
+    setup_script: |
+      set -eu
+      netdisk=/lzcapp/run/mnt/home
+      if [ -z "${LAZYCAT_APP_DEPLOY_UID:-}" ] || ! mountpoint -q "$netdisk"; then
+        printf '%s\n' 'MoviePilot 需要当前用户实例的懒猫网盘文稿挂载。' >&2
+        exit 1
+      fi
+
+      project_dir="$netdisk/MoviePilot"
+      for path in "$project_dir" "$project_dir/downloads" "$project_dir/library"; do
+        if [ -L "$path" ]; then
+          printf 'MoviePilot 存储目录不能是符号链接：%s\n' "$path" >&2
+          exit 1
+        fi
+      done
+      if [ ! -d "$project_dir" ]; then
+        # 网盘根目录由系统管理。创建项目目录时指定业务进程的组，并让子目录继承该组。
+        gosu "0:$PGID" mkdir -m 2775 -- "$project_dir"
+      fi
+      gosu "$PUID:$PGID" mkdir -p -- "$project_dir/downloads" "$project_dir/library"
+      if ! gosu "$PUID:$PGID" sh -c '[ -w "$1" ] && [ -w "$2" ]' sh "$project_dir/downloads" "$project_dir/library"; then
+        printf '%s\n' 'MoviePilot 进程无法写入网盘的下载或媒体库目录。' >&2
+        exit 1
+      fi
+
+    environment:
+      PUID: "918"
+      PGID: "918"
+      UMASK: "022"
+      PACKAGE_CACHE_ROOT: /moviepilot-cache/packages
+      CLOAKBROWSER_CACHE_DIR: /moviepilot-cache/cloakbrowser
+      MOVIEPILOT_AUTO_UPDATE: "false"
+      MOVIEPILOT_UPDATE_DEV: "false"
+    binds:
+      - /lzcapp/var/config:/config
+      - /lzcapp/cache/moviepilot:/moviepilot-cache
+
+ext_config:
+  enable_document_access: true
+  enable_media_access: true
