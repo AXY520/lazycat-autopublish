@@ -12,7 +12,7 @@
 
 ## MoviePilot 的 GitHub Release
 
-[MoviePilot](release-apps/moviepilot) 由独立的 `MoviePilot LPK Release` 工作流跟踪[上游稳定版](https://github.com/jxxghp/MoviePilot/releases/latest)。每 6 小时检查一次，也可在 Actions 手动触发。工作流按摘要把 amd64 镜像复制到懒猫官方仓库，验证空缓存启动，然后把小体积 LPK 发布到 [GitHub Releases](https://github.com/AXY520/lazycat-autopublish/releases) 的 `moviepilot-v版本号-lpk.修订号` 标签。
+[MoviePilot](release-apps/moviepilot) 由独立的 `MoviePilot LPK Release` 工作流跟踪[上游稳定版](https://github.com/jxxghp/MoviePilot/releases/latest)。每 6 小时检查一次，也可在 Actions 手动触发。工作流按摘要把 amd64 镜像复制到懒猫官方仓库，验证空缓存启动，然后把小体积 LPK 发布到 `moviepilot-v版本号` 标签并更新 [Latest Release](https://github.com/AXY520/lazycat-autopublish/releases/latest)。历史标签中的 `-lpk.1` 表示打包修订 1，包内 MoviePilot 版本仍与上游一致。
 
 MoviePilot 配置放在 `release-apps/`。工作流只提交 GitHub Release，懒猫账号仅用于镜像复制。应用运行上游稳定版镜像，CloakBrowser 内核在首次使用时下载。每个用户使用独立实例，网盘根目录下的 `MoviePilot/downloads` 和 `MoviePilot/library` 由实例启动时创建。更新已安装实例时，从 Release 下载新 LPK 安装。
 

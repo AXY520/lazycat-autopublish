@@ -17,9 +17,6 @@ concurrency:
   group: moviepilot-release
   cancel-in-progress: false
 
-env:
-  LPK_REVISION: "1"
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -34,14 +31,17 @@ jobs:
           upstream="$(gh api repos/jxxghp/MoviePilot/releases/latest --jq .tag_name)"
           [[ "$upstream" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           version="${upstream#v}"
-          tag="moviepilot-$upstream-lpk.$LPK_REVISION"
+          tag="moviepilot-$upstream"
           asset="MoviePilot-$version-linux-amd64.lpk"
           # 查询失败时停止，避免把 GitHub 错误当成 Release 缺失。
+          # 优先沿用已发布的修订标签，保留历史链接和 3.2.9 的启动修复。
           existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$tag\")")"
+            --jq ".[] | select(.tag_name == \"$tag\" or .tag_name == \"$tag-lpk.1\")" \
+            | jq -cs 'max_by(.tag_name) // empty')"
           has_asset=false
           draft=false
           if [ -n "$existing" ]; then
+            tag="$(jq -r .tag_name <<< "$existing")"
             draft="$(jq -r .draft <<< "$existing")"
             if jq -e --arg name "$asset" 'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' \
                 <<< "$existing" >/dev/null; then
@@ -109,7 +109,6 @@ jobs:
         run: bash release-apps/moviepilot/smoke.sh "$SOURCE_IMAGE" "$RUNNER_TEMP/moviepilot/$ASSET"
 
       - name: Publish GitHub Release
-        if: steps.plan.outputs.has_asset == 'false' || steps.plan.outputs.draft == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.plan.outputs.version }}
@@ -126,13 +125,15 @@ jobs:
             printf 'MoviePilot %s 的懒猫微服 LPK V2，适用于 Linux x86_64 和 lzcos 1.5.0 及以上版本。CloakBrowser 内核在首次使用时下载。\n\n[上游发布说明](https://github.com/jxxghp/MoviePilot/releases/tag/v%s)\n' \
               "$VERSION" "$VERSION" > "$notes"
             gh release create "$TAG" "$file" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --title "MoviePilot $VERSION (x86_64, LPK $LPK_REVISION)" --notes-file "$notes" --latest=false
+              --title "MoviePilot $VERSION (x86_64)" --notes-file "$notes" --latest
           else
             if [ "$HAS_ASSET" = false ]; then
               gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
             fi
             if [ "$IS_DRAFT" = true ]; then
-              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+            elif [ "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" != "$TAG" ]; then
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
             fi
           fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url | tee -a "$GITHUB_STEP_SUMMARY"
