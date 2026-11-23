@@ -34,14 +34,11 @@ jobs:
           tag="moviepilot-$upstream"
           asset="MoviePilot-$version-linux-amd64.lpk"
           # 查询失败时停止，避免把 GitHub 错误当成 Release 缺失。
-          # 优先沿用已发布的修订标签，保留历史链接和 3.2.9 的启动修复。
           existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$tag\" or .tag_name == \"$tag-lpk.1\")" \
-            | jq -cs 'max_by(.tag_name) // empty')"
+            --jq ".[] | select(.tag_name == \"$tag\")")"
           has_asset=false
           draft=false
           if [ -n "$existing" ]; then
-            tag="$(jq -r .tag_name <<< "$existing")"
             draft="$(jq -r .draft <<< "$existing")"
             if jq -e --arg name "$asset" 'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' \
                 <<< "$existing" >/dev/null; then
@@ -137,3 +134,34 @@ jobs:
             fi
           fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove superseded MoviePilot releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          ASSET: ${{ steps.plan.outputs.asset }}
+        run: |
+          set -euo pipefail
+          obsolete="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name' \
+            | jq -Rr --arg tag "$TAG" '
+              def version:
+                capture("^moviepilot-v(?<number>[0-9]+\\.[0-9]+\\.[0-9]+)(-lpk\\.[0-9]+)?$").number
+                | split(".") | map(tonumber);
+              select(. != $tag and version <= ($tag | version))')"
+          [[ -n "$obsolete" ]] || exit 0
+
+          # 下载并验证新包后，才移除旧 Release。
+          download="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" | jq -er --arg tag "$TAG" --arg asset "$ASSET" '
+            select(.tag_name == $tag) | .assets[]
+            | select(.name == $asset and .state == "uploaded" and .size > 0)
+            | [.browser_download_url, .digest] | @tsv')"
+          IFS=$'\t' read -r url digest <<< "$download"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          file="$RUNNER_TEMP/moviepilot-release-check.lpk"
+          curl -fsSL --retry 3 --max-time 30 "$url" -o "$file"
+          printf '%s  %s\n' "${digest#sha256:}" "$file" | sha256sum -c -
+
+          while IFS= read -r old_tag; do
+            gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --yes
+          done <<< "$obsolete"
