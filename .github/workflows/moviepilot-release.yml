@@ -58,7 +58,6 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
-        if: steps.plan.outputs.has_asset == 'false'
 
       - uses: actions/setup-node@v4
         if: steps.plan.outputs.has_asset == 'false'
@@ -135,11 +134,47 @@ jobs:
           fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove superseded MoviePilot releases
+      - name: Verify published MoviePilot LPK
+        id: published
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.plan.outputs.tag }}
           ASSET: ${{ steps.plan.outputs.asset }}
+        run: |
+          set -euo pipefail
+          download="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" | jq -er --arg tag "$TAG" --arg asset "$ASSET" '
+            select(.tag_name == $tag) | .assets[]
+            | select(.name == $asset and .state == "uploaded" and .size > 0)
+            | [.browser_download_url, .digest] | @tsv')"
+          IFS=$'\t' read -r url digest <<< "$download"
+          [[ "$url" == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET" ]]
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          file="$RUNNER_TEMP/moviepilot-release-check.lpk"
+          curl -fsSL --retry 3 --max-time 30 "$url" -o "$file"
+          printf '%s  %s\n' "${digest#sha256:}" "$file" | sha256sum -c -
+          printf 'url=%s\nsha256=%s\n' "$url" "${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Update MoviePilot in the community store
+        id: community
+        env:
+          MOVIEPILOT_COMMUNITY_MCP_TOKEN: ${{ secrets.MOVIEPILOT_COMMUNITY_MCP_TOKEN }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          LPK_URL: ${{ steps.published.outputs.url }}
+          LPK_SHA256: ${{ steps.published.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MOVIEPILOT_COMMUNITY_MCP_TOKEN" ]]; then
+            echo '未配置 MOVIEPILOT_COMMUNITY_MCP_TOKEN，跳过喵喵商店同步。' >> "$GITHUB_STEP_SUMMARY"
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 release-apps/moviepilot/publish-community.py "$VERSION" "$LPK_URL" "$LPK_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove superseded MoviePilot releases
+        if: steps.community.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
         run: |
           set -euo pipefail
           obsolete="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
@@ -150,17 +185,6 @@ jobs:
                 | split(".") | map(tonumber);
               select(. != $tag and version <= ($tag | version))')"
           [[ -n "$obsolete" ]] || exit 0
-
-          # 下载并验证新包后，才移除旧 Release。
-          download="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" | jq -er --arg tag "$TAG" --arg asset "$ASSET" '
-            select(.tag_name == $tag) | .assets[]
-            | select(.name == $asset and .state == "uploaded" and .size > 0)
-            | [.browser_download_url, .digest] | @tsv')"
-          IFS=$'\t' read -r url digest <<< "$download"
-          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
-          file="$RUNNER_TEMP/moviepilot-release-check.lpk"
-          curl -fsSL --retry 3 --max-time 30 "$url" -o "$file"
-          printf '%s  %s\n' "${digest#sha256:}" "$file" | sha256sum -c -
 
           while IFS= read -r old_tag; do
             gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --yes

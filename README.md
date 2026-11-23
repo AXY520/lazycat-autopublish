@@ -12,9 +12,11 @@
 
 ## MoviePilot 的 GitHub Release
 
-[MoviePilot](release-apps/moviepilot) 由独立的 `MoviePilot LPK Release` 工作流跟踪[上游稳定版](https://github.com/jxxghp/MoviePilot/releases/latest)。每 6 小时检查一次，也可在 Actions 手动触发。工作流按摘要把 amd64 镜像复制到懒猫官方仓库，验证空缓存启动，然后把小体积 LPK 发布到 `moviepilot-v版本号` 标签并更新 [Latest Release](https://github.com/AXY520/lazycat-autopublish/releases/latest)。新包可下载且通过校验后，工作流会清理此前的 MoviePilot Release。
+[MoviePilot](release-apps/moviepilot) 由独立的 `MoviePilot LPK Release` 工作流跟踪[上游稳定版](https://github.com/jxxghp/MoviePilot/releases/latest)。每 6 小时检查一次，也可在 Actions 手动触发。工作流按摘要把 amd64 镜像复制到懒猫官方仓库，验证空缓存启动，然后把小体积 LPK 发布到 `moviepilot-v版本号` 标签并更新 [Latest Release](https://github.com/AXY520/lazycat-autopublish/releases/latest)。
 
-MoviePilot 配置放在 `release-apps/`。工作流只提交 GitHub Release，懒猫账号仅用于镜像复制。应用运行上游稳定版镜像，CloakBrowser 内核在首次使用时下载。每个用户使用独立实例，网盘根目录下的 `MoviePilot/downloads` 和 `MoviePilot/library` 由实例启动时创建。更新已安装实例时，从 Release 下载新 LPK 安装。
+在仓库的 [Actions Secrets](https://github.com/AXY520/lazycat-autopublish/settings/secrets/actions) 配置 `MOVIEPILOT_COMMUNITY_MCP_TOKEN` 后，工作流会把已下载校验的 LPK 链接提交给喵喵社区商店。令牌需要能为已有应用 `org.moviepilot.lazycat` 上传版本。同步失败或版本待审核时会保留旧 Release，供社区商店继续下载。下一轮会重试或检查审核结果，新版本可用后只保留最新的 MoviePilot Release。未配置令牌时按 GitHub Release 流程发布和清理。
+
+MoviePilot 配置放在 `release-apps/`。懒猫官方商店账号仅用于镜像复制。应用运行上游稳定版镜像，CloakBrowser 内核在首次使用时下载。每个用户使用独立实例，网盘根目录下的 `MoviePilot/downloads` 和 `MoviePilot/library` 由实例启动时创建。更新已安装实例时，从 Release 下载新 LPK 安装。
 
 懒猫官方仓库会定期清理未被商店应用引用的镜像，长期保留在本地的 LPK 可能因此需要重新复制原镜像。[官方镜像仓库说明](https://developer.lazycat.cloud/publish-app.html)
 
