@@ -52,7 +52,7 @@ application:
 services:
 
   fluxdown:
-    image: registry.lazycat.cloud/aixinyin/zerx-lab/fluxdown-server:9f77fc8cb29768f7
+    image: registry.lazycat.cloud/aixinyin/zerx-lab/fluxdown-server:0a21a95e6769ab80
     network_mode: host
     binds:
       - /lzcapp/var/data:/lzcapp/var/data
